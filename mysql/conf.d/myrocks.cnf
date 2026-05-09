@@ -1,0 +1,12 @@
+[mysqld]
+# MyRocks (SSTable/LSM-tree) plugin
+plugin-load-add=ha_rocksdb.so
+
+# RocksDB tuning
+rocksdb_max_open_files=-1
+rocksdb_max_background_jobs=4
+rocksdb_block_cache_size=134217728
+
+# Allow large packets for bulk insert benchmarks
+max_allowed_packet=64M
+innodb_buffer_pool_size=256M

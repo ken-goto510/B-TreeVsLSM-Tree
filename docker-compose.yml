@@ -1,0 +1,37 @@
+services:
+  percona:
+    image: percona/percona-server:8.0
+    container_name: percona-benchmark
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: benchmark_db
+      MYSQL_USER: benchmark
+      MYSQL_PASSWORD: benchmark
+    ports:
+      - "3307:3306"
+    command: --plugin-load-add=ha_rocksdb.so
+    volumes:
+      - ./mysql/init:/docker-entrypoint-initdb.d
+      - percona_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-proot"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  app:
+    build: .
+    container_name: benchmark-app
+    ports:
+      - "8080:8080"
+    depends_on:
+      percona:
+        condition: service_healthy
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:mysql://percona:3306/benchmark_db?useSSL=false&allowPublicKeyRetrieval=true&rewriteBatchedStatements=true
+      SPRING_DATASOURCE_USERNAME: benchmark
+      SPRING_DATASOURCE_PASSWORD: benchmark
+
+volumes:
+  percona_data:
