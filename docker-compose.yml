@@ -1,4 +1,6 @@
 services:
+
+  # ── MySQL (InnoDB B-tree + MyRocks LSM-tree via Percona) ─────────────────────
   percona:
     image: percona/percona-server:8.0
     container_name: percona-benchmark
@@ -11,6 +13,7 @@ services:
       - "3307:3306"
     command: --plugin-load-add=ha_rocksdb.so
     volumes:
+      - ./mysql/conf.d:/etc/mysql/conf.d
       - ./mysql/init:/docker-entrypoint-initdb.d
       - percona_data:/var/lib/mysql
     healthcheck:
@@ -20,6 +23,77 @@ services:
       retries: 10
       start_period: 30s
 
+  # ── PostgreSQL (B-tree) ───────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: postgres-benchmark
+    environment:
+      POSTGRES_DB: benchmark_db
+      POSTGRES_USER: benchmark
+      POSTGRES_PASSWORD: benchmark
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U benchmark -d benchmark_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  # ── CockroachDB (B-tree / distributed SQL) ───────────────────────────────────
+  cockroachdb:
+    image: cockroachdb/cockroach:v23.2.4
+    container_name: cockroachdb-benchmark
+    command: start-single-node --insecure --store=type=mem,size=1GB
+    ports:
+      - "26257:26257"
+      - "8081:8080"
+    healthcheck:
+      test: ["CMD", "cockroach", "node", "status", "--insecure", "--host=localhost:26257"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 20s
+
+  # ── Apache Cassandra (LSM-tree) ──────────────────────────────────────────────
+  cassandra:
+    image: cassandra:4.1
+    container_name: cassandra-benchmark
+    environment:
+      MAX_HEAP_SIZE: 512M
+      HEAP_NEWSIZE: 128M
+      CASSANDRA_CLUSTER_NAME: BenchmarkCluster
+    ports:
+      - "9042:9042"
+    volumes:
+      - cassandra_data:/var/lib/cassandra
+    healthcheck:
+      test: ["CMD-SHELL", "nodetool status 2>/dev/null | grep -q UN || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 15
+      start_period: 90s
+
+  # ── ScyllaDB (LSM-tree, Cassandra-compatible) ─────────────────────────────────
+  scylladb:
+    image: scylladb/scylla:5.4
+    container_name: scylladb-benchmark
+    command: --smp 1 --memory 512M --overprovisioned 1
+    ports:
+      - "9043:9042"
+    volumes:
+      - scylla_data:/var/lib/scylla
+    healthcheck:
+      test: ["CMD-SHELL", "nodetool status 2>/dev/null | grep -q UN || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 15
+      start_period: 90s
+
+  # ── Spring Boot App ──────────────────────────────────────────────────────────
+  # RocksDB runs embedded inside the app — no separate container needed.
   app:
     build: .
     container_name: benchmark-app
@@ -28,10 +102,38 @@ services:
     depends_on:
       percona:
         condition: service_healthy
+      postgres:
+        condition: service_healthy
+      cockroachdb:
+        condition: service_healthy
+      cassandra:
+        condition: service_healthy
+      scylladb:
+        condition: service_healthy
     environment:
-      SPRING_DATASOURCE_URL: jdbc:mysql://percona:3306/benchmark_db?useSSL=false&allowPublicKeyRetrieval=true&rewriteBatchedStatements=true
-      SPRING_DATASOURCE_USERNAME: benchmark
-      SPRING_DATASOURCE_PASSWORD: benchmark
+      # MySQL (InnoDB + MyRocks)
+      BENCHMARK_MYSQL_URL: jdbc:mysql://percona:3306/benchmark_db?useSSL=false&allowPublicKeyRetrieval=true&rewriteBatchedStatements=true
+      BENCHMARK_MYSQL_USER: benchmark
+      BENCHMARK_MYSQL_PASS: benchmark
+      # PostgreSQL
+      BENCHMARK_PG_URL: jdbc:postgresql://postgres:5432/benchmark_db
+      BENCHMARK_PG_USER: benchmark
+      BENCHMARK_PG_PASS: benchmark
+      # CockroachDB
+      BENCHMARK_CRDB_URL: jdbc:postgresql://cockroachdb:26257/defaultdb?sslmode=disable
+      BENCHMARK_CRDB_USER: root
+      BENCHMARK_CRDB_PASS: ""
+      # Cassandra
+      BENCHMARK_CASSANDRA_HOSTS: cassandra
+      BENCHMARK_CASSANDRA_PORT: 9042
+      # ScyllaDB
+      BENCHMARK_SCYLLA_HOSTS: scylladb
+      BENCHMARK_SCYLLA_PORT: 9042
+      # RocksDB embedded
+      BENCHMARK_ROCKSDB_PATH: /tmp/rocksdb-benchmark
 
 volumes:
   percona_data:
+  postgres_data:
+  cassandra_data:
+  scylla_data:

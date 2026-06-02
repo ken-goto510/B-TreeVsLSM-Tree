@@ -1,70 +1,118 @@
 package com.example.benchmark.controller;
 
 import com.example.benchmark.model.BenchmarkResult;
-import com.example.benchmark.service.BenchmarkService;
+import com.example.benchmark.model.DbEngine;
+import com.example.benchmark.service.BenchmarkOrchestrator;
+import org.apache.commons.csv.CSVFormat;
+import org.apache.commons.csv.CSVPrinter;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.io.StringWriter;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 @RestController
 @RequestMapping("/api/benchmark")
 @CrossOrigin
 public class BenchmarkController {
 
-    private final BenchmarkService service;
+    private final BenchmarkOrchestrator orchestrator;
 
-    public BenchmarkController(BenchmarkService service) {
-        this.service = service;
+    public BenchmarkController(BenchmarkOrchestrator orchestrator) {
+        this.orchestrator = orchestrator;
     }
 
-    /** 全テーブルをリセット */
-    @PostMapping("/reset")
-    public ResponseEntity<Map<String, String>> reset() {
-        service.reset();
-        return ResponseEntity.ok(Map.of("status", "ok", "message", "両テーブルをリセットしました"));
+    /** List all engines and their availability */
+    @GetMapping("/engines")
+    public List<Map<String, Object>> engines() {
+        return orchestrator.availableEngines().stream()
+            .map(e -> Map.<String, Object>of(
+                "id",          e.name(),
+                "displayName", e.displayName,
+                "indexType",   e.indexType,
+                "color",       e.color,
+                "available",   true))
+            .toList();
     }
 
-    /** 現在の行数確認 */
+    /** Run full benchmark suite */
+    @PostMapping("/run")
+    public ResponseEntity<List<BenchmarkResult>> run(
+            @RequestParam(defaultValue = "5000")  int rowCount,
+            @RequestParam(defaultValue = "1000")  int readIter,
+            @RequestParam(required = false)       Set<String> engines) {
+
+        if (orchestrator.isRunning()) {
+            return ResponseEntity.status(409).body(List.of());
+        }
+        List<BenchmarkResult> results = orchestrator.runAll(engines, rowCount, readIter);
+        return ResponseEntity.ok(results);
+    }
+
+    /** Return last results without re-running */
+    @GetMapping("/results")
+    public List<BenchmarkResult> lastResults() {
+        return orchestrator.getLastResults();
+    }
+
+    /** Download last results as CSV */
+    @GetMapping("/results/csv")
+    public ResponseEntity<String> downloadCsv() throws Exception {
+        List<BenchmarkResult> results = orchestrator.getLastResults();
+        if (results.isEmpty()) {
+            return ResponseEntity.noContent().build();
+        }
+
+        StringWriter sw = new StringWriter();
+        CSVFormat fmt = CSVFormat.DEFAULT.builder()
+            .setHeader("DB Engine", "Index Type", "Workload",
+                       "Operations", "Throughput(ops/s)", "Avg Latency(ms)",
+                       "P95 Latency(ms)", "P99 Latency(ms)", "CPU(%)",
+                       "WAF", "Storage(bytes)", "Status", "Notes")
+            .build();
+
+        try (CSVPrinter csv = new CSVPrinter(sw, fmt)) {
+            for (BenchmarkResult r : results) {
+                csv.printRecord(
+                    r.dbEngine().displayName,
+                    r.dbEngine().indexType,
+                    r.workloadType().displayName,
+                    r.operationCount(),
+                    fmt(r.throughputOpsPerSec()),
+                    fmt(r.avgLatencyMs()),
+                    fmt(r.p95LatencyMs()),
+                    fmt(r.p99LatencyMs()),
+                    fmt(r.cpuUsagePercent()),
+                    r.writeAmplificationFactor() < 0 ? "N/A" : fmt(r.writeAmplificationFactor()),
+                    r.storageSizeBytes() < 0 ? "N/A" : r.storageSizeBytes(),
+                    r.status(),
+                    r.notes()
+                );
+            }
+        }
+
+        return ResponseEntity.ok()
+            .header(HttpHeaders.CONTENT_DISPOSITION,
+                    "attachment; filename=\"benchmark-results.csv\"")
+            .contentType(MediaType.parseMediaType("text/csv; charset=UTF-8"))
+            .body(sw.toString());
+    }
+
+    /** Check if a benchmark is currently running */
     @GetMapping("/status")
     public Map<String, Object> status() {
-        return Map.of("rowCount", service.currentRowCount());
+        return Map.of(
+            "running",          orchestrator.isRunning(),
+            "availableEngines", orchestrator.availableEngines().stream()
+                                            .map(DbEngine::name).toList()
+        );
     }
 
-    /** Bulk INSERT ベンチマーク */
-    @PostMapping("/insert")
-    public BenchmarkResult insert(@RequestParam(defaultValue = "10000") int count) {
-        return service.benchmarkBulkInsert(count);
-    }
-
-    /** Point Lookup (PK) ベンチマーク */
-    @GetMapping("/point-lookup")
-    public BenchmarkResult pointLookup(@RequestParam(defaultValue = "1000") int iterations) {
-        return service.benchmarkPointLookup(iterations);
-    }
-
-    /** Range Scan (price BETWEEN) ベンチマーク */
-    @GetMapping("/range-scan")
-    public BenchmarkResult rangeScan(@RequestParam(defaultValue = "200") int iterations) {
-        return service.benchmarkRangeScan(iterations);
-    }
-
-    /** Secondary Index (category) ベンチマーク */
-    @GetMapping("/secondary-index")
-    public BenchmarkResult secondaryIndex(@RequestParam(defaultValue = "200") int iterations) {
-        return service.benchmarkSecondaryIndex(iterations);
-    }
-
-    /** DELETE ベンチマーク */
-    @DeleteMapping("/delete")
-    public BenchmarkResult delete() {
-        return service.benchmarkDelete();
-    }
-
-    /** 全ベンチマークを順番に実行 */
-    @PostMapping("/run-all")
-    public List<BenchmarkResult> runAll(@RequestParam(defaultValue = "10000") int insertCount) {
-        return service.runAll(insertCount);
+    private String fmt(double v) {
+        return String.format("%.2f", v);
     }
 }
