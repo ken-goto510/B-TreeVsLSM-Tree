@@ -24,7 +24,6 @@ public abstract class AbstractCassandraRunner implements DbBenchmarkRunner {
     protected static final String KEYSPACE = "benchmark";
     protected static final String TABLE    = "products";
 
-    protected final CpuMonitor cpuMonitor = new CpuMonitor();
     private volatile CqlSession session;
 
     protected abstract String contactHost();
@@ -45,10 +44,50 @@ public abstract class AbstractCassandraRunner implements DbBenchmarkRunner {
         return session;
     }
 
+    // ── CPU monitor factory ───────────────────────────────────────────────────
+
+    private CpuMonitor newCpuMonitor() {
+        return new CpuMonitor(getEngine().containerName);
+    }
+
+    // ── Baseline RTT measurement ──────────────────────────────────────────────
+
+    /**
+     * Measures the average round-trip overhead per CQL operation
+     * (network + driver serialization) using 50 lightweight pings.
+     *
+     * Subtracted from each per-operation timer so reported latency reflects
+     * DB-side index processing time only.
+     */
+    protected long measureBaselineNs() {
+        PreparedStatement ps = session().prepare("SELECT now() FROM system.local");
+        long total = 0;
+        for (int i = 0; i < 50; i++) {
+            long t = System.nanoTime();
+            session().execute(ps.bind());
+            total += System.nanoTime() - t;
+        }
+        return total / 50;
+    }
+
+    // ── DbBenchmarkRunner ─────────────────────────────────────────────────────
+
     @Override
     public boolean isAvailable() {
-        try {
-            session().execute("SELECT release_version FROM system.local");
+        try (CqlSession probe = CqlSession.builder()
+                .addContactPoint(new InetSocketAddress(contactHost(), contactPort()))
+                .withLocalDatacenter(localDatacenter())
+                .withConfigLoader(
+                    com.datastax.oss.driver.api.core.config.DriverConfigLoader.programmaticBuilder()
+                        .withDuration(
+                            com.datastax.oss.driver.api.core.config.DefaultDriverOption.CONNECTION_INIT_QUERY_TIMEOUT,
+                            java.time.Duration.ofSeconds(2))
+                        .withDuration(
+                            com.datastax.oss.driver.api.core.config.DefaultDriverOption.CONTROL_CONNECTION_TIMEOUT,
+                            java.time.Duration.ofSeconds(2))
+                        .build())
+                .build()) {
+            probe.execute("SELECT release_version FROM system.local");
             return true;
         } catch (Exception e) {
             return false;
@@ -79,6 +118,8 @@ public abstract class AbstractCassandraRunner implements DbBenchmarkRunner {
         catch (Exception ignored) {}
     }
 
+    // ── INSERT ONLY ───────────────────────────────────────────────────────────
+
     @Override
     public BenchmarkResult runInsertOnly(int rowCount) {
         PreparedStatement ps = session().prepare(
@@ -86,7 +127,9 @@ public abstract class AbstractCassandraRunner implements DbBenchmarkRunner {
             " (id, name, price, category, created_at) VALUES (?,?,?,?,toTimestamp(now()))");
 
         LatencyTracker tracker = new LatencyTracker();
-        double cpu = cpuMonitor.measureDuring(() -> {
+        long baseline          = measureBaselineNs();
+
+        double cpu = newCpuMonitor().measureDuring(() -> {
             Random rng = ThreadLocalRandom.current();
             tracker.start();
             for (int i = 0; i < rowCount; i++) {
@@ -96,11 +139,13 @@ public abstract class AbstractCassandraRunner implements DbBenchmarkRunner {
                     "Product-" + (i + 1),
                     randPrice(rng),
                     CATEGORIES[rng.nextInt(CATEGORIES.length)]));
-                tracker.record(System.nanoTime() - t);
+                tracker.record(Math.max(0L, System.nanoTime() - t - baseline));
             }
         });
         return build(WorkloadType.INSERT_ONLY, rowCount, tracker, cpu);
     }
+
+    // ── UPDATE HEAVY ─────────────────────────────────────────────────────────
 
     @Override
     public BenchmarkResult runUpdateHeavy(int rowCount) {
@@ -109,7 +154,9 @@ public abstract class AbstractCassandraRunner implements DbBenchmarkRunner {
             " SET price = ?, category = ? WHERE id = ?");
 
         LatencyTracker tracker = new LatencyTracker();
-        double cpu = cpuMonitor.measureDuring(() -> {
+        long baseline          = measureBaselineNs();
+
+        double cpu = newCpuMonitor().measureDuring(() -> {
             Random rng = ThreadLocalRandom.current();
             tracker.start();
             for (int i = 0; i < rowCount; i++) {
@@ -117,11 +164,13 @@ public abstract class AbstractCassandraRunner implements DbBenchmarkRunner {
                 long t  = System.nanoTime();
                 session().execute(ps.bind(randPrice(rng),
                     CATEGORIES[rng.nextInt(CATEGORIES.length)], id));
-                tracker.record(System.nanoTime() - t);
+                tracker.record(Math.max(0L, System.nanoTime() - t - baseline));
             }
         });
         return build(WorkloadType.UPDATE_HEAVY, rowCount, tracker, cpu);
     }
+
+    // ── POINT READ ────────────────────────────────────────────────────────────
 
     @Override
     public BenchmarkResult runPointRead(int iterations) {
@@ -129,28 +178,33 @@ public abstract class AbstractCassandraRunner implements DbBenchmarkRunner {
             "SELECT * FROM " + KEYSPACE + "." + TABLE + " WHERE id = ?");
 
         LatencyTracker tracker = new LatencyTracker();
-        double cpu = cpuMonitor.measureDuring(() -> {
+        long baseline          = measureBaselineNs();
+
+        double cpu = newCpuMonitor().measureDuring(() -> {
             Random rng = ThreadLocalRandom.current();
             tracker.start();
             for (int i = 0; i < iterations; i++) {
                 long id = (long) rng.nextInt(iterations) + 1;
                 long t  = System.nanoTime();
                 session().execute(ps.bind(id));
-                tracker.record(System.nanoTime() - t);
+                tracker.record(Math.max(0L, System.nanoTime() - t - baseline));
             }
         });
         return build(WorkloadType.POINT_READ, iterations, tracker, cpu);
     }
 
+    // ── RANGE READ ────────────────────────────────────────────────────────────
+
     @Override
     public BenchmarkResult runRangeRead(int iterations) {
-        // Cassandra doesn't support range queries on non-partition keys without ALLOW FILTERING
         PreparedStatement ps = session().prepare(
             "SELECT * FROM " + KEYSPACE + "." + TABLE +
             " WHERE price >= ? AND price <= ? ALLOW FILTERING LIMIT 200");
 
         LatencyTracker tracker = new LatencyTracker();
-        double cpu = cpuMonitor.measureDuring(() -> {
+        long baseline          = measureBaselineNs();
+
+        double cpu = newCpuMonitor().measureDuring(() -> {
             Random rng = ThreadLocalRandom.current();
             tracker.start();
             for (int i = 0; i < iterations; i++) {
@@ -159,11 +213,13 @@ public abstract class AbstractCassandraRunner implements DbBenchmarkRunner {
                 BigDecimal hi = lo.add(BigDecimal.valueOf(100));
                 long t = System.nanoTime();
                 session().execute(ps.bind(lo, hi));
-                tracker.record(System.nanoTime() - t);
+                tracker.record(Math.max(0L, System.nanoTime() - t - baseline));
             }
         });
         return build(WorkloadType.RANGE_READ, iterations, tracker, cpu);
     }
+
+    // ── DELETE HEAVY ──────────────────────────────────────────────────────────
 
     @Override
     public BenchmarkResult runDeleteHeavy(int rowCount) {
@@ -171,18 +227,22 @@ public abstract class AbstractCassandraRunner implements DbBenchmarkRunner {
             "DELETE FROM " + KEYSPACE + "." + TABLE + " WHERE id = ?");
 
         LatencyTracker tracker = new LatencyTracker();
-        double cpu = cpuMonitor.measureDuring(() -> {
+        long baseline          = measureBaselineNs();
+
+        double cpu = newCpuMonitor().measureDuring(() -> {
             Random rng = ThreadLocalRandom.current();
             tracker.start();
             for (int i = 0; i < rowCount; i++) {
                 long id = (long) rng.nextInt(rowCount * 2) + 1;
                 long t  = System.nanoTime();
                 session().execute(ps.bind(id));
-                tracker.record(System.nanoTime() - t);
+                tracker.record(Math.max(0L, System.nanoTime() - t - baseline));
             }
         });
         return build(WorkloadType.DELETE_HEAVY, rowCount, tracker, cpu);
     }
+
+    // ── MIXED (70% read / 30% write) ─────────────────────────────────────────
 
     @Override
     public BenchmarkResult runMixed(int totalOps) {
@@ -192,7 +252,9 @@ public abstract class AbstractCassandraRunner implements DbBenchmarkRunner {
             "UPDATE " + KEYSPACE + "." + TABLE + " SET price = ? WHERE id = ?");
 
         LatencyTracker tracker = new LatencyTracker();
-        double cpu = cpuMonitor.measureDuring(() -> {
+        long baseline          = measureBaselineNs();
+
+        double cpu = newCpuMonitor().measureDuring(() -> {
             Random rng = ThreadLocalRandom.current();
             tracker.start();
             for (int i = 0; i < totalOps; i++) {
@@ -203,15 +265,16 @@ public abstract class AbstractCassandraRunner implements DbBenchmarkRunner {
                 } else {
                     session().execute(writePs.bind(randPrice(rng), id));
                 }
-                tracker.record(System.nanoTime() - t);
+                tracker.record(Math.max(0L, System.nanoTime() - t - baseline));
             }
         });
         return build(WorkloadType.MIXED, totalOps, tracker, cpu);
     }
 
+    // ── STORAGE SIZE ──────────────────────────────────────────────────────────
+
     @Override
     public BenchmarkResult getStorageSize() {
-        // Cassandra size estimation via system tables
         try {
             var rs = session().execute(
                 "SELECT mean_partition_size, partitions_count " +
@@ -227,6 +290,8 @@ public abstract class AbstractCassandraRunner implements DbBenchmarkRunner {
             return BenchmarkResult.error(getEngine(), WorkloadType.STORAGE_SIZE, e.getMessage());
         }
     }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
 
     protected BigDecimal randPrice(Random rng) {
         return BigDecimal.valueOf(rng.nextDouble() * 999 + 1).setScale(2, RoundingMode.HALF_UP);

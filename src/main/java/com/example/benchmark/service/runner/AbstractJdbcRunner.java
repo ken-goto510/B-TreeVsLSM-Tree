@@ -12,7 +12,6 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.Random;
 import java.util.concurrent.ThreadLocalRandom;
-import java.util.concurrent.atomic.AtomicLong;
 
 public abstract class AbstractJdbcRunner implements DbBenchmarkRunner {
 
@@ -23,7 +22,6 @@ public abstract class AbstractJdbcRunner implements DbBenchmarkRunner {
 
     private volatile HikariDataSource ds;
     private volatile JdbcTemplate jdbc;
-    protected final CpuMonitor cpuMonitor = new CpuMonitor();
 
     // ── Abstract hooks for subclasses ─────────────────────────────────────────
 
@@ -61,12 +59,49 @@ public abstract class AbstractJdbcRunner implements DbBenchmarkRunner {
         return jdbc;
     }
 
+    // ── CPU monitor factory ───────────────────────────────────────────────────
+
+    /**
+     * Creates a CpuMonitor targeting this engine's Docker container.
+     * Called once per workload method to avoid shared state between workloads.
+     */
+    private CpuMonitor newCpuMonitor() {
+        return new CpuMonitor(getEngine().containerName);
+    }
+
+    // ── Baseline RTT measurement ──────────────────────────────────────────────
+
+    /**
+     * Measures the average round-trip overhead per query (network + JDBC driver)
+     * by running 50 lightweight SELECT 1 queries.
+     *
+     * This baseline is subtracted from each per-operation timer so that the
+     * reported latency reflects DB-side index processing time only.
+     */
+    protected long measureBaselineNs() {
+        long total = 0;
+        for (int i = 0; i < 50; i++) {
+            long t = System.nanoTime();
+            jdbc().queryForObject("SELECT 1", Integer.class);
+            total += System.nanoTime() - t;
+        }
+        return total / 50;
+    }
+
     // ── DbBenchmarkRunner ─────────────────────────────────────────────────────
 
     @Override
     public boolean isAvailable() {
-        try {
-            jdbc().queryForObject("SELECT 1", Integer.class);
+        HikariConfig cfg = new HikariConfig();
+        cfg.setJdbcUrl(jdbcUrl());
+        cfg.setUsername(jdbcUsername());
+        cfg.setPassword(jdbcPassword());
+        cfg.setDriverClassName(driverClass());
+        cfg.setConnectionTimeout(1_500);
+        cfg.setMaximumPoolSize(1);
+        cfg.setPoolName("check-" + getEngine().name());
+        try (HikariDataSource ds = new HikariDataSource(cfg)) {
+            new JdbcTemplate(ds).queryForObject("SELECT 1", Integer.class);
             return true;
         } catch (Exception e) {
             return false;
@@ -89,10 +124,11 @@ public abstract class AbstractJdbcRunner implements DbBenchmarkRunner {
     @Override
     public BenchmarkResult runInsertOnly(int rowCount) {
         LatencyTracker tracker = new LatencyTracker();
-        long approxUserBytes   = (long) rowCount * 80;  // ~80 bytes per row
+        long approxUserBytes   = (long) rowCount * 80;
         double[] wafHolder     = {-1};
+        long baseline          = measureBaselineNs();
 
-        double cpu = cpuMonitor.measureDuring(() -> {
+        double cpu = newCpuMonitor().measureDuring(() -> {
             Random rng = ThreadLocalRandom.current();
             tracker.start();
             for (int i = 0; i < rowCount; i++) {
@@ -102,7 +138,7 @@ public abstract class AbstractJdbcRunner implements DbBenchmarkRunner {
                     "Product-" + (i + 1),
                     randPrice(rng),
                     CATEGORIES[rng.nextInt(CATEGORIES.length)]);
-                tracker.record(System.nanoTime() - t);
+                tracker.record(Math.max(0L, System.nanoTime() - t - baseline));
             }
             wafHolder[0] = computeWaf(approxUserBytes);
         });
@@ -117,8 +153,9 @@ public abstract class AbstractJdbcRunner implements DbBenchmarkRunner {
         LatencyTracker tracker = new LatencyTracker();
         long approxUserBytes   = (long) rowCount * 20;
         double[] wafHolder     = {-1};
+        long baseline          = measureBaselineNs();
 
-        double cpu = cpuMonitor.measureDuring(() -> {
+        double cpu = newCpuMonitor().measureDuring(() -> {
             Random rng = ThreadLocalRandom.current();
             tracker.start();
             for (int i = 0; i < rowCount; i++) {
@@ -129,7 +166,7 @@ public abstract class AbstractJdbcRunner implements DbBenchmarkRunner {
                     randPrice(rng),
                     CATEGORIES[rng.nextInt(CATEGORIES.length)],
                     id);
-                tracker.record(System.nanoTime() - t);
+                tracker.record(Math.max(0L, System.nanoTime() - t - baseline));
             }
             wafHolder[0] = computeWaf(approxUserBytes);
         });
@@ -145,14 +182,16 @@ public abstract class AbstractJdbcRunner implements DbBenchmarkRunner {
         if (total == 0) return BenchmarkResult.error(getEngine(), WorkloadType.POINT_READ, "データがありません");
 
         LatencyTracker tracker = new LatencyTracker();
-        double cpu = cpuMonitor.measureDuring(() -> {
+        long baseline          = measureBaselineNs();
+
+        double cpu = newCpuMonitor().measureDuring(() -> {
             Random rng = ThreadLocalRandom.current();
             tracker.start();
             for (int i = 0; i < iterations; i++) {
                 long id = (long) rng.nextInt((int) Math.min(total, Integer.MAX_VALUE)) + 1;
                 long t  = System.nanoTime();
                 jdbc().queryForList("SELECT * FROM " + tableName() + " WHERE id = ?", id);
-                tracker.record(System.nanoTime() - t);
+                tracker.record(Math.max(0L, System.nanoTime() - t - baseline));
             }
         });
 
@@ -166,7 +205,9 @@ public abstract class AbstractJdbcRunner implements DbBenchmarkRunner {
         if (countRows() == 0) return BenchmarkResult.error(getEngine(), WorkloadType.RANGE_READ, "データがありません");
 
         LatencyTracker tracker = new LatencyTracker();
-        double cpu = cpuMonitor.measureDuring(() -> {
+        long baseline          = measureBaselineNs();
+
+        double cpu = newCpuMonitor().measureDuring(() -> {
             Random rng = ThreadLocalRandom.current();
             tracker.start();
             for (int i = 0; i < iterations; i++) {
@@ -177,7 +218,7 @@ public abstract class AbstractJdbcRunner implements DbBenchmarkRunner {
                 jdbc().queryForList(
                     "SELECT * FROM " + tableName() + " WHERE price BETWEEN ? AND ? LIMIT 200",
                     lo, hi);
-                tracker.record(System.nanoTime() - t);
+                tracker.record(Math.max(0L, System.nanoTime() - t - baseline));
             }
         });
 
@@ -191,14 +232,16 @@ public abstract class AbstractJdbcRunner implements DbBenchmarkRunner {
         if (countRows() == 0) return BenchmarkResult.error(getEngine(), WorkloadType.DELETE_HEAVY, "データがありません");
 
         LatencyTracker tracker = new LatencyTracker();
-        double cpu = cpuMonitor.measureDuring(() -> {
+        long baseline          = measureBaselineNs();
+
+        double cpu = newCpuMonitor().measureDuring(() -> {
             Random rng = ThreadLocalRandom.current();
             tracker.start();
             for (int i = 0; i < rowCount; i++) {
                 long id = (long) rng.nextInt(rowCount * 2) + 1;
                 long t  = System.nanoTime();
                 jdbc().update("DELETE FROM " + tableName() + " WHERE id = ?", id);
-                tracker.record(System.nanoTime() - t);
+                tracker.record(Math.max(0L, System.nanoTime() - t - baseline));
             }
         });
 
@@ -213,7 +256,9 @@ public abstract class AbstractJdbcRunner implements DbBenchmarkRunner {
         if (total == 0) return BenchmarkResult.error(getEngine(), WorkloadType.MIXED, "データがありません");
 
         LatencyTracker tracker = new LatencyTracker();
-        double cpu = cpuMonitor.measureDuring(() -> {
+        long baseline          = measureBaselineNs();
+
+        double cpu = newCpuMonitor().measureDuring(() -> {
             Random rng = ThreadLocalRandom.current();
             tracker.start();
             for (int i = 0; i < totalOps; i++) {
@@ -227,7 +272,7 @@ public abstract class AbstractJdbcRunner implements DbBenchmarkRunner {
                         "UPDATE " + tableName() + " SET price = ? WHERE id = ?",
                         randPrice(rng), id);
                 }
-                tracker.record(System.nanoTime() - t);
+                tracker.record(Math.max(0L, System.nanoTime() - t - baseline));
             }
         });
 

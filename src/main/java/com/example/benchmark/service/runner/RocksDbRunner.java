@@ -43,7 +43,8 @@ public class RocksDbRunner implements DbBenchmarkRunner {
     }
 
     private final String dbPath;
-    private final CpuMonitor cpuMonitor = new CpuMonitor();
+    // RocksDB is embedded (no separate container), so we use JVM-process CPU.
+    private final CpuMonitor cpuMonitor = new CpuMonitor(null);
     private RocksDB db;
     private Statistics stats;
 

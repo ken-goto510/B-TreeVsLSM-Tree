@@ -1,7 +1,6 @@
 package com.example.benchmark.controller;
 
 import com.example.benchmark.model.BenchmarkResult;
-import com.example.benchmark.model.DbEngine;
 import com.example.benchmark.service.BenchmarkOrchestrator;
 import org.apache.commons.csv.CSVFormat;
 import org.apache.commons.csv.CSVPrinter;
@@ -102,14 +101,13 @@ public class BenchmarkController {
             .body(sw.toString());
     }
 
-    /** Check if a benchmark is currently running */
+    /**
+     * 軽量なステータス確認。DB 接続チェックは行わない。
+     * availableEngines は /engines エンドポイントで明示的に取得する。
+     */
     @GetMapping("/status")
     public Map<String, Object> status() {
-        return Map.of(
-            "running",          orchestrator.isRunning(),
-            "availableEngines", orchestrator.availableEngines().stream()
-                                            .map(DbEngine::name).toList()
-        );
+        return Map.of("running", orchestrator.isRunning());
     }
 
     private String fmt(double v) {

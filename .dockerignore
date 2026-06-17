@@ -1,0 +1,16 @@
+# Build output (jar is built inside the multi-stage Dockerfile)
+target/
+
+# VCS / IDE
+.git/
+.gitignore
+.idea/
+.vscode/
+*.iml
+
+# OS / logs
+.DS_Store
+*.log
+
+# Local DB volumes / data if any
+**/data/
