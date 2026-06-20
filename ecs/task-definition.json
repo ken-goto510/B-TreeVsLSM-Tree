@@ -69,7 +69,7 @@
       "portMappings": [{ "containerPort": 26257, "protocol": "tcp" }],
       "healthCheck": {
         "command": ["CMD-SHELL", "cockroach node status --insecure --host=localhost:26257 || exit 1"],
-        "interval": 15, "timeout": 5, "retries": 15, "startPeriod": 40
+        "interval": 15, "timeout": 5, "retries": 10, "startPeriod": 40
       },
       "logConfiguration": {
         "logDriver": "awslogs",

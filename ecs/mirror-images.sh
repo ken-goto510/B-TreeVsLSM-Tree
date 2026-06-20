@@ -4,7 +4,8 @@
 #
 #   - app      : built from the repo's multi-stage Dockerfile
 #   - percona  : custom build (bakes in mysql/conf.d/myrocks.cnf)
-#   - postgres / cockroach / cassandra / scylla : mirrored from Docker Hub
+#   - scylla   : custom build (disables scylla-jmx to avoid the 7199 collision)
+#   - postgres / cockroach / cassandra : mirrored from Docker Hub
 #
 # Run from the repository root:
 #   bash ecs/mirror-images.sh
@@ -59,8 +60,13 @@ echo "==> Build & push custom Percona image"
 docker build -t "${REGISTRY}/bench/percona:8.0" -f ecs/percona/Dockerfile .
 docker push "${REGISTRY}/bench/percona:8.0"
 
-# 3. Mirror DB images from Docker Hub
-for repo in bench/postgres bench/cockroach bench/cassandra bench/scylla; do
+# 3. Custom ScyllaDB image (disables scylla-jmx; avoids JMX 7199 collision with Cassandra)
+echo "==> Build & push custom ScyllaDB image"
+docker build -t "${REGISTRY}/bench/scylla:5.4" -f ecs/scylla/Dockerfile .
+docker push "${REGISTRY}/bench/scylla:5.4"
+
+# 4. Mirror remaining DB images from Docker Hub
+for repo in bench/postgres bench/cockroach bench/cassandra; do
   src="${SOURCE[$repo]}"
   dst="${REGISTRY}/${repo}:${DEST_TAG[$repo]}"
   echo "==> Mirror ${src}  ->  ${dst}"
