@@ -113,7 +113,7 @@
       "memory": 2560,
       "command": [
         "--smp", "1",
-        "--memory", "2G",
+        "--memory", "512M",
         "--overprovisioned", "1",
         "--native-transport-port", "9043",
         "--native-shard-aware-transport-port", "19043",
