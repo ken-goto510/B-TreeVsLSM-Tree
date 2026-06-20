@@ -65,7 +65,7 @@
       "image": "074213351472.dkr.ecr.us-east-1.amazonaws.com/bench/cockroach:v23.2.4",
       "essential": true,
       "memory": 2048,
-      "command": ["start-single-node", "--insecure", "--store=type=mem,size=1GB"],
+      "command": ["start-single-node", "--insecure", "--store=type=mem,size=1GB", "--http-addr=localhost:8085"],
       "portMappings": [{ "containerPort": 26257, "protocol": "tcp" }],
       "healthCheck": {
         "command": ["CMD-SHELL", "cockroach node status --insecure --host=localhost:26257 || exit 1"],
