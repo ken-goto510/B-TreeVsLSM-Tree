@@ -1,0 +1,182 @@
+{
+  "family": "db-benchmark",
+  "requiresCompatibilities": ["FARGATE"],
+  "networkMode": "awsvpc",
+  "cpu": "8192",
+  "memory": "16384",
+  "ephemeralStorage": { "sizeInGiB": 40 },
+  "runtimePlatform": { "cpuArchitecture": "X86_64", "operatingSystemFamily": "LINUX" },
+  "executionRoleArn": "arn:aws:iam::074213351472:role/ecsTaskExecutionRole",
+  "containerDefinitions": [
+    {
+      "name": "postgres-benchmark",
+      "image": "074213351472.dkr.ecr.us-east-1.amazonaws.com/bench/postgres:16-alpine",
+      "essential": true,
+      "memory": 2048,
+      "portMappings": [{ "containerPort": 5432, "protocol": "tcp" }],
+      "environment": [
+        { "name": "POSTGRES_DB", "value": "benchmark_db" },
+        { "name": "POSTGRES_USER", "value": "benchmark" },
+        { "name": "POSTGRES_PASSWORD", "value": "benchmark" }
+      ],
+      "healthCheck": {
+        "command": ["CMD-SHELL", "pg_isready -U benchmark -d benchmark_db || exit 1"],
+        "interval": 15, "timeout": 5, "retries": 10, "startPeriod": 30
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/db-benchmark",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "postgres",
+          "awslogs-create-group": "true"
+        }
+      }
+    },
+    {
+      "name": "percona-benchmark",
+      "image": "074213351472.dkr.ecr.us-east-1.amazonaws.com/bench/percona:8.0",
+      "essential": true,
+      "memory": 2048,
+      "command": ["--plugin-load-add=ha_rocksdb.so"],
+      "portMappings": [{ "containerPort": 3306, "protocol": "tcp" }],
+      "environment": [
+        { "name": "MYSQL_ROOT_PASSWORD", "value": "root" },
+        { "name": "MYSQL_DATABASE", "value": "benchmark_db" },
+        { "name": "MYSQL_USER", "value": "benchmark" },
+        { "name": "MYSQL_PASSWORD", "value": "benchmark" }
+      ],
+      "healthCheck": {
+        "command": ["CMD-SHELL", "mysqladmin ping -h localhost -u root -proot || exit 1"],
+        "interval": 15, "timeout": 5, "retries": 10, "startPeriod": 60
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/db-benchmark",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "percona",
+          "awslogs-create-group": "true"
+        }
+      }
+    },
+    {
+      "name": "cockroachdb-benchmark",
+      "image": "074213351472.dkr.ecr.us-east-1.amazonaws.com/bench/cockroach:v23.2.4",
+      "essential": true,
+      "memory": 2048,
+      "command": ["start-single-node", "--insecure", "--store=type=mem,size=1GB"],
+      "portMappings": [{ "containerPort": 26257, "protocol": "tcp" }],
+      "healthCheck": {
+        "command": ["CMD-SHELL", "cockroach node status --insecure --host=localhost:26257 || exit 1"],
+        "interval": 15, "timeout": 5, "retries": 15, "startPeriod": 40
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/db-benchmark",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "cockroach",
+          "awslogs-create-group": "true"
+        }
+      }
+    },
+    {
+      "name": "cassandra-benchmark",
+      "image": "074213351472.dkr.ecr.us-east-1.amazonaws.com/bench/cassandra:4.1",
+      "essential": true,
+      "memory": 3072,
+      "portMappings": [{ "containerPort": 9042, "protocol": "tcp" }],
+      "environment": [
+        { "name": "MAX_HEAP_SIZE", "value": "512M" },
+        { "name": "HEAP_NEWSIZE", "value": "128M" },
+        { "name": "CASSANDRA_CLUSTER_NAME", "value": "BenchmarkCluster" }
+      ],
+      "healthCheck": {
+        "command": ["CMD-SHELL", "nodetool status 2>/dev/null | grep -q UN || exit 1"],
+        "interval": 30, "timeout": 10, "retries": 10, "startPeriod": 120
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/db-benchmark",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "cassandra",
+          "awslogs-create-group": "true"
+        }
+      }
+    },
+    {
+      "name": "scylladb-benchmark",
+      "image": "074213351472.dkr.ecr.us-east-1.amazonaws.com/bench/scylla:5.4",
+      "essential": true,
+      "memory": 2560,
+      "command": [
+        "--smp", "1",
+        "--memory", "2G",
+        "--overprovisioned", "1",
+        "--native-transport-port", "9043",
+        "--native-shard-aware-transport-port", "19043",
+        "--storage-port", "7010",
+        "--ssl-storage-port", "7011"
+      ],
+      "portMappings": [{ "containerPort": 9043, "protocol": "tcp" }],
+      "healthCheck": {
+        "command": ["CMD-SHELL", "cqlsh -e 'SELECT now() FROM system.local' 127.0.0.1 9043 || exit 1"],
+        "interval": 30, "timeout": 10, "retries": 10, "startPeriod": 120
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/db-benchmark",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "scylla",
+          "awslogs-create-group": "true"
+        }
+      }
+    },
+    {
+      "name": "benchmark-app",
+      "image": "074213351472.dkr.ecr.us-east-1.amazonaws.com/b-treevslsm-tree-app:latest",
+      "essential": true,
+      "memory": 4096,
+      "portMappings": [{ "containerPort": 8080, "protocol": "tcp" }],
+      "environment": [
+        { "name": "BENCHMARK_MYSQL_URL", "value": "jdbc:mysql://localhost:3306/benchmark_db?useSSL=false&allowPublicKeyRetrieval=true&rewriteBatchedStatements=true" },
+        { "name": "BENCHMARK_MYSQL_USER", "value": "benchmark" },
+        { "name": "BENCHMARK_MYSQL_PASS", "value": "benchmark" },
+        { "name": "BENCHMARK_PG_URL", "value": "jdbc:postgresql://localhost:5432/benchmark_db" },
+        { "name": "BENCHMARK_PG_USER", "value": "benchmark" },
+        { "name": "BENCHMARK_PG_PASS", "value": "benchmark" },
+        { "name": "BENCHMARK_CRDB_URL", "value": "jdbc:postgresql://localhost:26257/defaultdb?sslmode=disable" },
+        { "name": "BENCHMARK_CRDB_USER", "value": "root" },
+        { "name": "BENCHMARK_CRDB_PASS", "value": "" },
+        { "name": "BENCHMARK_CASSANDRA_HOSTS", "value": "localhost" },
+        { "name": "BENCHMARK_CASSANDRA_PORT", "value": "9042" },
+        { "name": "BENCHMARK_SCYLLA_HOSTS", "value": "localhost" },
+        { "name": "BENCHMARK_SCYLLA_PORT", "value": "9043" },
+        { "name": "BENCHMARK_ROCKSDB_PATH", "value": "/tmp/rocksdb-benchmark" }
+      ],
+      "dependsOn": [
+        { "containerName": "postgres-benchmark",    "condition": "HEALTHY" },
+        { "containerName": "percona-benchmark",      "condition": "HEALTHY" },
+        { "containerName": "cockroachdb-benchmark",  "condition": "HEALTHY" },
+        { "containerName": "cassandra-benchmark",    "condition": "HEALTHY" },
+        { "containerName": "scylladb-benchmark",     "condition": "HEALTHY" }
+      ],
+      "healthCheck": {
+        "command": ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"],
+        "interval": 15, "timeout": 5, "retries": 5, "startPeriod": 60
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/db-benchmark",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "app",
+          "awslogs-create-group": "true"
+        }
+      }
+    }
+  ]
+}

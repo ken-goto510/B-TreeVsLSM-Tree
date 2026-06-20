@@ -7,21 +7,27 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.lang.management.ManagementFactory;
 import java.net.Socket;
+import java.net.URI;
 import java.net.UnixDomainSocketAddress;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.ByteBuffer;
 import java.nio.channels.SocketChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.time.Duration;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.*;
 
 /**
  * Measures CPU usage during a benchmark task.
  *
- * For a Docker container (containerName != null) it reads the container's
- * cumulative CPU counters from the Docker Engine API (/var/run/docker.sock)
- * immediately before and after the task, then computes the average CPU% over
- * the exact workload window:
+ * For a container (containerName != null) it reads the container's cumulative
+ * CPU counters immediately before and after the task, then computes the average
+ * CPU% over the exact workload window:
  *
  *     CPU% = (deltaContainerCpu / deltaSystemCpu) * numCpus * 100
  *
@@ -29,14 +35,33 @@ import java.util.concurrent.*;
  * the benchmark — and stays accurate even for short workloads (no polling /
  * sampling-window misalignment).
  *
- * Falls back to JVM-process CPU (getProcessCpuLoad, sampled during the task)
- * when containerName is null (embedded RocksDB) or the Docker socket is
- * unavailable.
+ * The counter source is auto-detected:
+ *   1. ECS Fargate/EC2 — the ECS Task Metadata Endpoint v4 ({@code /task/stats}),
+ *      when the {@code ECS_CONTAINER_METADATA_URI_V4} env var is present.
+ *      (Docker socket is unavailable on Fargate.)
+ *   2. Local / plain Docker — the Docker Engine API via {@code /var/run/docker.sock}.
+ *   3. Otherwise (or containerName == null, e.g. embedded RocksDB, or any failure)
+ *      — JVM-process CPU (getProcessCpuLoad, sampled during the task).
+ *
+ * Both container sources return the same Docker {@code cpu_stats} JSON shape, so
+ * the parsing and the CPU% formula are shared.
  */
 public class CpuMonitor {
 
     private static final String DOCKER_SOCKET_PATH = "/var/run/docker.sock";
     private static final ObjectMapper MAPPER = new ObjectMapper();
+
+    /** Set by ECS on every task container; null elsewhere. */
+    private static final String ECS_METADATA_URI = System.getenv("ECS_CONTAINER_METADATA_URI_V4");
+
+    private static final HttpClient HTTP = HttpClient.newBuilder()
+            .connectTimeout(Duration.ofSeconds(3))
+            .build();
+
+    /** containerName -> dockerId, resolved once from the ECS task metadata. */
+    private static volatile Map<String, String> ecsNameToId;
+    /** Task vCPU count (from ECS task metadata Limits.CPU), used if online_cpus is absent. */
+    private static volatile int ecsTaskCpus = 0;
 
     private final String containerName;
 
@@ -71,22 +96,22 @@ public class CpuMonitor {
         return (containerCpu != null) ? containerCpu : poller.average();
     }
 
-    // ── Docker container CPU ──────────────────────────────────────────────────
+    // ── Container CPU counters ────────────────────────────────────────────────
 
     /** @return [totalCpuUsageNs, systemCpuUsageNs, onlineCpus] or null on failure */
     private long[] readCounters() {
-        try {
-            String json = fetchFirstStatsFrame();
-            JsonNode cpu = MAPPER.readTree(json).at("/cpu_stats");
-            long total   = cpu.at("/cpu_usage/total_usage").asLong();
-            long system  = cpu.at("/system_cpu_usage").asLong();
-            int  numCpus = cpu.at("/online_cpus").asInt();
-            if (numCpus <= 0) numCpus = Runtime.getRuntime().availableProcessors();
-            if (total <= 0 || system <= 0) return null;
-            return new long[]{ total, system, numCpus };
-        } catch (Exception e) {
-            return null;
-        }
+        return (ECS_METADATA_URI != null) ? readCountersEcs() : readCountersDocker();
+    }
+
+    /** Parses a Docker {@code cpu_stats} node into [total, system, numCpus]; null if invalid. */
+    private long[] parseCpuStats(JsonNode cpu, int fallbackCpus) {
+        long total   = cpu.at("/cpu_usage/total_usage").asLong();
+        long system  = cpu.at("/system_cpu_usage").asLong();
+        int  numCpus = cpu.at("/online_cpus").asInt();
+        if (numCpus <= 0) numCpus = fallbackCpus > 0 ? fallbackCpus
+                                                      : Runtime.getRuntime().availableProcessors();
+        if (total <= 0 || system <= 0) return null;
+        return new long[]{ total, system, numCpus };
     }
 
     private Double computeContainerCpu(long[] start, long[] end) {
@@ -96,6 +121,64 @@ public class CpuMonitor {
         int  numCpus  = (int) end[2];
         if (deltaSys <= 0 || deltaCpu < 0) return null;
         return ((double) deltaCpu / deltaSys) * numCpus * 100.0;
+    }
+
+    // ── ECS Task Metadata v4 source ───────────────────────────────────────────
+
+    private long[] readCountersEcs() {
+        try {
+            String dockerId = resolveEcsDockerId(containerName);
+            if (dockerId == null) return null;
+            JsonNode stats = MAPPER.readTree(httpGet(ECS_METADATA_URI + "/task/stats"));
+            JsonNode cpu = stats.path(dockerId).path("cpu_stats");
+            if (cpu.isMissingNode() || cpu.isNull()) return null;
+            return parseCpuStats(cpu, ecsTaskCpus);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** Resolves a task-definition container name to its Docker ID via {@code /task} (cached). */
+    private String resolveEcsDockerId(String name) throws IOException, InterruptedException {
+        Map<String, String> map = ecsNameToId;
+        if (map == null) {
+            synchronized (CpuMonitor.class) {
+                map = ecsNameToId;
+                if (map == null) {
+                    map = new HashMap<>();
+                    JsonNode task = MAPPER.readTree(httpGet(ECS_METADATA_URI + "/task"));
+                    for (JsonNode c : task.path("Containers")) {
+                        String n  = c.path("Name").asText(null);
+                        String id = c.path("DockerId").asText(null);
+                        if (n != null && id != null) map.put(n, id);
+                    }
+                    // Task vCPU count: Limits.CPU is in whole vCPUs (e.g. 8.0).
+                    ecsTaskCpus = (int) Math.round(task.at("/Limits/CPU").asDouble(0));
+                    ecsNameToId = map;
+                }
+            }
+        }
+        return map.get(name);
+    }
+
+    private String httpGet(String url) throws IOException, InterruptedException {
+        HttpRequest req = HttpRequest.newBuilder(URI.create(url))
+                .timeout(Duration.ofSeconds(3))
+                .GET()
+                .build();
+        return HTTP.send(req, HttpResponse.BodyHandlers.ofString()).body();
+    }
+
+    // ── Docker Engine API source (/var/run/docker.sock) ───────────────────────
+
+    private long[] readCountersDocker() {
+        try {
+            String json = fetchFirstStatsFrame();
+            JsonNode cpu = MAPPER.readTree(json).at("/cpu_stats");
+            return parseCpuStats(cpu, 0);
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     /**
