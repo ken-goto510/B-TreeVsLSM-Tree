@@ -118,7 +118,9 @@
         "--native-transport-port", "9043",
         "--native-shard-aware-transport-port", "19043",
         "--storage-port", "7010",
-        "--ssl-storage-port", "7011"
+        "--ssl-storage-port", "7011",
+        "--rpc-address", "0.0.0.0",
+        "--broadcast-rpc-address", "127.0.0.1"
       ],
       "portMappings": [{ "containerPort": 9043, "protocol": "tcp" }],
       "healthCheck": {
