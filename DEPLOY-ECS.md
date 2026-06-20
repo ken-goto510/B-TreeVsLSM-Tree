@@ -22,7 +22,7 @@ B-Tree vs LSM-Tree ベンチマークを **単一の Fargate タスク**（app +
 ```bash
 bash ecs/mirror-images.sh
 ```
-これで以下が ECR に入る（app と percona はビルド、他4 DB は Docker Hub からミラー）：
+これで以下が ECR に入る（app / percona / scylla はビルド、他3 DB は Docker Hub からミラー）：
 ```
 b-treevslsm-tree-app:latest
 bench/percona:8.0   bench/postgres:16-alpine
@@ -106,15 +106,30 @@ CloudWatch Logs `/ecs/db-benchmark`（ストリーム接頭辞 cassandra/scylla/
 
 ---
 
-## ⚠ ScyllaDB の scylla-jmx ポート衝突（初回のみ確認）
+## トラブルシュート：単一タスク localhost 共有で実際に起きた4問題（解決済み）
 
-ScyllaDB 同梱の `scylla-jmx` は 7199 を掴むため、Cassandra の JMX(7199) と衝突しうる。
-- ヘルスチェックは JMX を使わず `cqlsh`（9043）で行うので、**healthy 判定には影響しない**
-- ただし scylla-jmx の bind 失敗がコンテナを落とす場合は、CloudWatch の scylla ログを確認し、
-  対処（scylla-jmx の無効化 or ポート変更）をタスク定義 command に追加する
+docker-compose は各コンテナが**別ネットワーク（別IP）**だが、Fargate の単一タスクは
+**全コンテナが1つのネットワーク名前空間＝localhost を共有**する。この差により以下4つが
+顕在化した。**いずれも現行の `ecs/task-definition.json` とカスタムイメージで解決済み**だが、
+別バージョンへ移植する際の参考として記録する。
 
-ScyllaDB が `unhealthy` のまま、または再起動を繰り返す場合は scylla ログを最初に確認すること。
+| # | 症状 | 原因 | 修正 |
+|---|------|------|------|
+| 1 | scylla が起動直後から `Port already in use: 7199` を連発、scylla-jmx が crash-loop | ScyllaDB 同梱の `scylla-jmx` が JMX 7199 を要求するが Cassandra が先に 7199 を確保 | カスタム scylla イメージで scylla-jmx を無効化（`ecs/scylla/Dockerfile` が `/etc/supervisord.conf.d/scylla-jmx.conf` を削除）。健全性確認は cqlsh なので JMX 不要 |
+| 2 | scylla は Running だがヘルスチェック（cqlsh）が通らず `unhealthy`／app も localhost:9043 に繋がらない | ScyllaDB は CQL をコンテナ eth0 IP のみに bind し、`127.0.0.1` で待ち受けない（Cassandra は 0.0.0.0 bind なので無問題） | scylla command に `--rpc-address 0.0.0.0 --broadcast-rpc-address 127.0.0.1` を追加し loopback 到達可能に |
+| 3 | scylla が `Could not initialize seastar: insufficient physical memory (needed ~2G available ~908M)` で crash-loop → FATAL | Fargate のコンテナで実際に確保できる物理メモリが hard limit より小さく、`--memory 2G` を満たせない | scylla command を `--memory 512M` に（compose 時代の実績値。小規模ベンチには十分） |
+| 4 | app が `APPLICATION FAILED TO START / Port 8080 was already in use` で exit 1 → タスク停止 | CockroachDB の DB Console が 8080 を使い、app(8080) と衝突 | cockroach command に `--http-addr=localhost:8085` を追加して 8080 を空ける |
+
+### 切り分けの勘所
+- コンテナが `STOPPED`／`異常`／再起動ループ → まず **CloudWatch Logs `/ecs/db-benchmark`** の該当ストリーム末尾を見る
+- 終了コード: `137`=SIGKILL（OOM もしくはタスク teardown 時の強制終了）／`143`=SIGTERM（巻き添えの正常終了）／`1`=アプリ自身のエラー
+- 「app が起動まで進んだ（8080 を bind しようとした）」= **全 DB が healthy になった**証拠。DB 側は通っている
+
+## 動作確認の実績（2026-06 時点）
+revision 4（上記4修正込み）で全6コンテナ healthy・app 起動を確認。Cassandra ベンチで
+`cpuUsagePercent` が INSERT 48% / READ 7〜9% と**ワークロード毎に妥当に変化**＝
+**Task Metadata v4 経由でコンテナ別 CPU 計測が機能**することを確認済み。
 
 ## コストの注意
-8 vCPU / 16 GB の Fargate は時間課金が高い。**ベンチ終了後はタスクを停止**すること
+8 vCPU / 16 GB の Fargate は時間課金が高い（概算 $0.40/時）。**ベンチ終了後はタスクを停止**すること
 （サービス化した場合は希望数を 0 に）。
