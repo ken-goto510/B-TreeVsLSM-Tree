@@ -34,6 +34,20 @@ benchmark:
     datacenter: ${BENCHMARK_SCYLLA_DC:datacenter1}
   rocksdb:
     path: ${BENCHMARK_ROCKSDB_PATH:./rocksdb-data}
+  enabled-engines:
+  mode: ${BENCHMARK_MODE:worker}
+  row-count: ${BENCHMARK_ROW_COUNT:5000}
+  read-iter: ${BENCHMARK_READ_ITER:1000}
+  s3:
+    bucket:     ${BENCHMARK_S3_BUCKET:}
+    run-id:     ${BENCHMARK_S3_RUN_ID:}
+    worker-key: ${BENCHMARK_S3_WORKER_KEY:}
+  ecs:
+    cluster:            ${BENCHMARK_ECS_CLUSTER:db-benchmark}
+    subnets:            ${BENCHMARK_ECS_SUBNETS:}
+    security-groups:    ${BENCHMARK_ECS_SECURITY_GROUPS:}
+    execution-role-arn: ${BENCHMARK_ECS_EXECUTION_ROLE_ARN:arn:aws:iam::074213351472:role/ecsTaskExecutionRole}
+    worker-task-role-arn: ${BENCHMARK_ECS_WORKER_TASK_ROLE_ARN:}
   defaults:
     connection-timeout-ms: 5000
     pool-size: 5

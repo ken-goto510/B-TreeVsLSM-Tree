@@ -1,0 +1,41 @@
+{
+  "family": "db-benchmark-orchestrator",
+  "requiresCompatibilities": ["FARGATE"],
+  "networkMode": "awsvpc",
+  "cpu": "1024",
+  "memory": "2048",
+  "ephemeralStorage": { "sizeInGiB": 21 },
+  "runtimePlatform": { "cpuArchitecture": "X86_64", "operatingSystemFamily": "LINUX" },
+  "executionRoleArn": "arn:aws:iam::074213351472:role/ecsTaskExecutionRole",
+  "taskRoleArn":      "arn:aws:iam::074213351472:role/ecsTaskRole-orchestrator",
+  "containerDefinitions": [
+    {
+      "name": "benchmark-app",
+      "image": "074213351472.dkr.ecr.us-east-1.amazonaws.com/b-treevslsm-tree-app:latest",
+      "essential": true,
+      "memory": 2048,
+      "portMappings": [{ "containerPort": 8080, "protocol": "tcp" }],
+      "environment": [
+        { "name": "BENCHMARK_MODE",                  "value": "orchestrator" },
+        { "name": "BENCHMARK_S3_BUCKET",             "value": "db-benchmark-results-074213351472" },
+        { "name": "BENCHMARK_ECS_CLUSTER",           "value": "db-benchmark" },
+        { "name": "BENCHMARK_ECS_SUBNETS",           "value": "subnet-02e921917d9fdfc29" },
+        { "name": "BENCHMARK_ECS_SECURITY_GROUPS",   "value": "sg-0810feb248e6a9d94" },
+        { "name": "BENCHMARK_ECS_WORKER_TASK_ROLE_ARN", "value": "arn:aws:iam::074213351472:role/ecsTaskRole-worker" }
+      ],
+      "healthCheck": {
+        "command": ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"],
+        "interval": 15, "timeout": 5, "retries": 5, "startPeriod": 30
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/db-benchmark",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "orchestrator",
+          "awslogs-create-group": "true"
+        }
+      }
+    }
+  ]
+}

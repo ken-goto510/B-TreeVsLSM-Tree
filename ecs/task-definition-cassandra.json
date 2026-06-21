@@ -1,0 +1,68 @@
+{
+  "family": "db-benchmark-cassandra",
+  "requiresCompatibilities": ["FARGATE"],
+  "networkMode": "awsvpc",
+  "cpu": "4096",
+  "memory": "12288",
+  "ephemeralStorage": { "sizeInGiB": 40 },
+  "runtimePlatform": { "cpuArchitecture": "X86_64", "operatingSystemFamily": "LINUX" },
+  "executionRoleArn": "arn:aws:iam::074213351472:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::074213351472:role/ecsTaskRole-worker",
+  "containerDefinitions": [
+    {
+      "name": "cassandra-benchmark",
+      "image": "074213351472.dkr.ecr.us-east-1.amazonaws.com/bench/cassandra:4.1",
+      "essential": true,
+      "memory": 8192,
+      "portMappings": [{ "containerPort": 9042, "protocol": "tcp" }],
+      "environment": [
+        { "name": "MAX_HEAP_SIZE",           "value": "4096M" },
+        { "name": "HEAP_NEWSIZE",            "value": "512M" },
+        { "name": "CASSANDRA_CLUSTER_NAME",  "value": "BenchmarkCluster" }
+      ],
+      "healthCheck": {
+        "command": ["CMD-SHELL", "nodetool status 2>/dev/null | grep -q UN || exit 1"],
+        "interval": 30, "timeout": 10, "retries": 10, "startPeriod": 120
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/db-benchmark",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "cassandra",
+          "awslogs-create-group": "true"
+        }
+      }
+    },
+    {
+      "name": "benchmark-app",
+      "image": "074213351472.dkr.ecr.us-east-1.amazonaws.com/b-treevslsm-tree-app:latest",
+      "essential": true,
+      "memory": 3072,
+      "portMappings": [{ "containerPort": 8080, "protocol": "tcp" }],
+      "environment": [
+        { "name": "BENCHMARK_CASSANDRA_HOSTS",  "value": "localhost" },
+        { "name": "BENCHMARK_CASSANDRA_PORT",   "value": "9042" },
+        { "name": "BENCHMARK_ENABLED_ENGINES",  "value": "CASSANDRA" },
+        { "name": "BENCHMARK_MODE",             "value": "worker" },
+        { "name": "BENCHMARK_S3_BUCKET",        "value": "db-benchmark-results-074213351472" }
+      ],
+      "dependsOn": [
+        { "containerName": "cassandra-benchmark", "condition": "HEALTHY" }
+      ],
+      "healthCheck": {
+        "command": ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"],
+        "interval": 15, "timeout": 5, "retries": 5, "startPeriod": 60
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/db-benchmark",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "app-cassandra",
+          "awslogs-create-group": "true"
+        }
+      }
+    }
+  ]
+}

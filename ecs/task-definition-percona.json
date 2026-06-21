@@ -1,0 +1,71 @@
+{
+  "family": "db-benchmark-percona",
+  "requiresCompatibilities": ["FARGATE"],
+  "networkMode": "awsvpc",
+  "cpu": "4096",
+  "memory": "12288",
+  "ephemeralStorage": { "sizeInGiB": 40 },
+  "runtimePlatform": { "cpuArchitecture": "X86_64", "operatingSystemFamily": "LINUX" },
+  "executionRoleArn": "arn:aws:iam::074213351472:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::074213351472:role/ecsTaskRole-worker",
+  "containerDefinitions": [
+    {
+      "name": "percona-benchmark",
+      "image": "074213351472.dkr.ecr.us-east-1.amazonaws.com/bench/percona:8.0",
+      "essential": true,
+      "memory": 8192,
+      "command": ["--plugin-load-add=ha_rocksdb.so"],
+      "portMappings": [{ "containerPort": 3306, "protocol": "tcp" }],
+      "environment": [
+        { "name": "MYSQL_ROOT_PASSWORD", "value": "root" },
+        { "name": "MYSQL_DATABASE",      "value": "benchmark_db" },
+        { "name": "MYSQL_USER",          "value": "benchmark" },
+        { "name": "MYSQL_PASSWORD",      "value": "benchmark" }
+      ],
+      "healthCheck": {
+        "command": ["CMD-SHELL", "mysqladmin ping -h localhost -u root -proot || exit 1"],
+        "interval": 15, "timeout": 5, "retries": 10, "startPeriod": 60
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/db-benchmark",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "percona",
+          "awslogs-create-group": "true"
+        }
+      }
+    },
+    {
+      "name": "benchmark-app",
+      "image": "074213351472.dkr.ecr.us-east-1.amazonaws.com/b-treevslsm-tree-app:latest",
+      "essential": true,
+      "memory": 3072,
+      "portMappings": [{ "containerPort": 8080, "protocol": "tcp" }],
+      "environment": [
+        { "name": "BENCHMARK_MYSQL_URL",        "value": "jdbc:mysql://localhost:3306/benchmark_db?useSSL=false&allowPublicKeyRetrieval=true&rewriteBatchedStatements=true" },
+        { "name": "BENCHMARK_MYSQL_USER",       "value": "benchmark" },
+        { "name": "BENCHMARK_MYSQL_PASS",       "value": "benchmark" },
+        { "name": "BENCHMARK_ENABLED_ENGINES",  "value": "MYSQL_INNODB,MYSQL_MYROCKS" },
+        { "name": "BENCHMARK_MODE",             "value": "worker" },
+        { "name": "BENCHMARK_S3_BUCKET",        "value": "db-benchmark-results-074213351472" }
+      ],
+      "dependsOn": [
+        { "containerName": "percona-benchmark", "condition": "HEALTHY" }
+      ],
+      "healthCheck": {
+        "command": ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"],
+        "interval": 15, "timeout": 5, "retries": 5, "startPeriod": 60
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/db-benchmark",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "app-percona",
+          "awslogs-create-group": "true"
+        }
+      }
+    }
+  ]
+}

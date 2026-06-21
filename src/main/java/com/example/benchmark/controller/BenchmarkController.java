@@ -1,7 +1,10 @@
 package com.example.benchmark.controller;
 
+import com.example.benchmark.model.BenchmarkProperties;
 import com.example.benchmark.model.BenchmarkResult;
+import com.example.benchmark.model.DbEngine;
 import com.example.benchmark.service.BenchmarkOrchestrator;
+import com.example.benchmark.service.OrchestratorService;
 import org.apache.commons.csv.CSVFormat;
 import org.apache.commons.csv.CSVPrinter;
 import org.springframework.http.HttpHeaders;
@@ -12,7 +15,9 @@ import org.springframework.web.bind.annotation.*;
 import java.io.StringWriter;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 
 @RestController
 @RequestMapping("/api/benchmark")
@@ -20,15 +25,32 @@ import java.util.Set;
 public class BenchmarkController {
 
     private final BenchmarkOrchestrator orchestrator;
+    private final Optional<OrchestratorService> orchestratorService;
+    private final BenchmarkProperties props;
 
-    public BenchmarkController(BenchmarkOrchestrator orchestrator) {
-        this.orchestrator = orchestrator;
+    public BenchmarkController(BenchmarkOrchestrator orchestrator,
+                               Optional<OrchestratorService> orchestratorService,
+                               BenchmarkProperties props) {
+        this.orchestrator        = orchestrator;
+        this.orchestratorService = orchestratorService;
+        this.props               = props;
     }
 
-    /** List all engines and their availability */
+    private boolean isOrchestratorMode() {
+        return "orchestrator".equals(props.getMode());
+    }
+
+    private static final List<DbEngine> ORCHESTRATOR_ENGINES = List.of(
+        DbEngine.POSTGRESQL, DbEngine.MYSQL_INNODB, DbEngine.MYSQL_MYROCKS,
+        DbEngine.COCKROACHDB, DbEngine.CASSANDRA, DbEngine.SCYLLADB
+    );
+
     @GetMapping("/engines")
     public List<Map<String, Object>> engines() {
-        return orchestrator.availableEngines().stream()
+        List<DbEngine> engines = isOrchestratorMode()
+            ? ORCHESTRATOR_ENGINES
+            : orchestrator.availableEngines();
+        return engines.stream()
             .map(e -> Map.<String, Object>of(
                 "id",          e.name(),
                 "displayName", e.displayName,
@@ -38,33 +60,46 @@ public class BenchmarkController {
             .toList();
     }
 
-    /** Run full benchmark suite */
+    /** Starts benchmark asynchronously and returns 202 immediately. */
     @PostMapping("/run")
-    public ResponseEntity<List<BenchmarkResult>> run(
-            @RequestParam(defaultValue = "5000")  int rowCount,
-            @RequestParam(defaultValue = "1000")  int readIter,
-            @RequestParam(required = false)       Set<String> engines) {
+    public ResponseEntity<Void> run(
+            @RequestParam(defaultValue = "5000") int rowCount,
+            @RequestParam(defaultValue = "1000") int readIter,
+            @RequestParam(required = false)      Set<String> engines) {
 
-        if (orchestrator.isRunning()) {
-            return ResponseEntity.status(409).body(List.of());
+        if (isOrchestratorMode()) {
+            OrchestratorService svc = orchestratorService.orElseThrow();
+            if (svc.isRunning()) return ResponseEntity.status(409).build();
+            svc.startOrchestration(rowCount, readIter);
+            return ResponseEntity.accepted().build();
         }
-        List<BenchmarkResult> results = orchestrator.runAll(engines, rowCount, readIter);
-        return ResponseEntity.ok(results);
+
+        if (orchestrator.isRunning()) return ResponseEntity.status(409).build();
+        CompletableFuture.runAsync(() -> orchestrator.runAll(engines, rowCount, readIter));
+        return ResponseEntity.accepted().build();
     }
 
-    /** Return last results without re-running */
+    @GetMapping("/status")
+    public Map<String, Object> status() {
+        if (isOrchestratorMode()) {
+            OrchestratorService svc = orchestratorService.orElseThrow();
+            return Map.of("running", svc.isRunning(), "phase", svc.getPhase());
+        }
+        return Map.of("running", orchestrator.isRunning());
+    }
+
     @GetMapping("/results")
     public List<BenchmarkResult> lastResults() {
+        if (isOrchestratorMode()) {
+            return orchestratorService.orElseThrow().getLastResults();
+        }
         return orchestrator.getLastResults();
     }
 
-    /** Download last results as CSV */
     @GetMapping("/results/csv")
     public ResponseEntity<String> downloadCsv() throws Exception {
-        List<BenchmarkResult> results = orchestrator.getLastResults();
-        if (results.isEmpty()) {
-            return ResponseEntity.noContent().build();
-        }
+        List<BenchmarkResult> results = lastResults();
+        if (results.isEmpty()) return ResponseEntity.noContent().build();
 
         StringWriter sw = new StringWriter();
         CSVFormat fmt = CSVFormat.DEFAULT.builder()
@@ -77,19 +112,15 @@ public class BenchmarkController {
         try (CSVPrinter csv = new CSVPrinter(sw, fmt)) {
             for (BenchmarkResult r : results) {
                 csv.printRecord(
-                    r.dbEngine().displayName,
-                    r.dbEngine().indexType,
+                    r.dbEngine().displayName, r.dbEngine().indexType,
                     r.workloadType().displayName,
                     r.operationCount(),
-                    fmt(r.throughputOpsPerSec()),
-                    fmt(r.avgLatencyMs()),
-                    fmt(r.p95LatencyMs()),
-                    fmt(r.p99LatencyMs()),
+                    fmt(r.throughputOpsPerSec()), fmt(r.avgLatencyMs()),
+                    fmt(r.p95LatencyMs()), fmt(r.p99LatencyMs()),
                     fmt(r.cpuUsagePercent()),
                     r.writeAmplificationFactor() < 0 ? "N/A" : fmt(r.writeAmplificationFactor()),
                     r.storageSizeBytes() < 0 ? "N/A" : r.storageSizeBytes(),
-                    r.status(),
-                    r.notes()
+                    r.status(), r.notes()
                 );
             }
         }
@@ -101,16 +132,5 @@ public class BenchmarkController {
             .body(sw.toString());
     }
 
-    /**
-     * 軽量なステータス確認。DB 接続チェックは行わない。
-     * availableEngines は /engines エンドポイントで明示的に取得する。
-     */
-    @GetMapping("/status")
-    public Map<String, Object> status() {
-        return Map.of("running", orchestrator.isRunning());
-    }
-
-    private String fmt(double v) {
-        return String.format("%.2f", v);
-    }
+    private String fmt(double v) { return String.format("%.2f", v); }
 }

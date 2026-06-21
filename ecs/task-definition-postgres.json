@@ -1,0 +1,69 @@
+{
+  "family": "db-benchmark-postgres",
+  "requiresCompatibilities": ["FARGATE"],
+  "networkMode": "awsvpc",
+  "cpu": "4096",
+  "memory": "12288",
+  "ephemeralStorage": { "sizeInGiB": 40 },
+  "runtimePlatform": { "cpuArchitecture": "X86_64", "operatingSystemFamily": "LINUX" },
+  "executionRoleArn": "arn:aws:iam::074213351472:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::074213351472:role/ecsTaskRole-worker",
+  "containerDefinitions": [
+    {
+      "name": "postgres-benchmark",
+      "image": "074213351472.dkr.ecr.us-east-1.amazonaws.com/bench/postgres:16-alpine",
+      "essential": true,
+      "memory": 8192,
+      "portMappings": [{ "containerPort": 5432, "protocol": "tcp" }],
+      "environment": [
+        { "name": "POSTGRES_DB",       "value": "benchmark_db" },
+        { "name": "POSTGRES_USER",     "value": "benchmark" },
+        { "name": "POSTGRES_PASSWORD", "value": "benchmark" }
+      ],
+      "healthCheck": {
+        "command": ["CMD-SHELL", "pg_isready -U benchmark -d benchmark_db || exit 1"],
+        "interval": 15, "timeout": 5, "retries": 10, "startPeriod": 30
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/db-benchmark",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "postgres",
+          "awslogs-create-group": "true"
+        }
+      }
+    },
+    {
+      "name": "benchmark-app",
+      "image": "074213351472.dkr.ecr.us-east-1.amazonaws.com/b-treevslsm-tree-app:latest",
+      "essential": true,
+      "memory": 3072,
+      "portMappings": [{ "containerPort": 8080, "protocol": "tcp" }],
+      "environment": [
+        { "name": "BENCHMARK_PG_URL",          "value": "jdbc:postgresql://localhost:5432/benchmark_db" },
+        { "name": "BENCHMARK_PG_USER",         "value": "benchmark" },
+        { "name": "BENCHMARK_PG_PASS",         "value": "benchmark" },
+        { "name": "BENCHMARK_ENABLED_ENGINES", "value": "POSTGRESQL" },
+        { "name": "BENCHMARK_MODE",            "value": "worker" },
+        { "name": "BENCHMARK_S3_BUCKET",       "value": "db-benchmark-results-074213351472" }
+      ],
+      "dependsOn": [
+        { "containerName": "postgres-benchmark", "condition": "HEALTHY" }
+      ],
+      "healthCheck": {
+        "command": ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"],
+        "interval": 15, "timeout": 5, "retries": 5, "startPeriod": 60
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/db-benchmark",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "app-postgres",
+          "awslogs-create-group": "true"
+        }
+      }
+    }
+  ]
+}

@@ -318,16 +318,39 @@ async function runBenchmark() {
 
   try {
     const res = await fetch('/api/benchmark/run', { method: 'POST', body: params });
-    if (res.status === 409) { showError('ベンチマーク実行中です。完了をお待ちください。'); return; }
-    if (!res.ok) throw new Error(await res.text());
-    allResults = await res.json();
-    renderResults();
-    document.getElementById('btn-csv').disabled = false;
+    if (res.status === 409) { showError('ベンチマーク実行中です。完了をお待ちください。'); setRunning(false); return; }
+    if (!res.ok) { showError(await res.text()); setRunning(false); return; }
+    // 202 Accepted — poll until done
+    pollUntilDone();
   } catch(e) {
     showError(e.message);
-  } finally {
     setRunning(false);
   }
+}
+
+function pollUntilDone() {
+  const interval = setInterval(async () => {
+    try {
+      const st = await fetch('/api/benchmark/status').then(r => r.json());
+      const phase = st.phase || '';
+      if (phase && phase !== 'idle' && phase !== 'done') {
+        document.getElementById('overlay-msg').textContent =
+          'ベンチマーク実行中... [' + phase + ']';
+      }
+      if (!st.running) {
+        clearInterval(interval);
+        const results = await fetch('/api/benchmark/results').then(r => r.json());
+        allResults = results;
+        renderResults();
+        document.getElementById('btn-csv').disabled = false;
+        setRunning(false);
+      }
+    } catch(e) {
+      clearInterval(interval);
+      showError(e.message);
+      setRunning(false);
+    }
+  }, 3000);
 }
 
 // ── Render ────────────────────────────────────────────────────────────────────

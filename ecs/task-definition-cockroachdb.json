@@ -1,0 +1,70 @@
+{
+  "family": "db-benchmark-cockroachdb",
+  "requiresCompatibilities": ["FARGATE"],
+  "networkMode": "awsvpc",
+  "cpu": "4096",
+  "memory": "12288",
+  "ephemeralStorage": { "sizeInGiB": 40 },
+  "runtimePlatform": { "cpuArchitecture": "X86_64", "operatingSystemFamily": "LINUX" },
+  "executionRoleArn": "arn:aws:iam::074213351472:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::074213351472:role/ecsTaskRole-worker",
+  "containerDefinitions": [
+    {
+      "name": "cockroachdb-benchmark",
+      "image": "074213351472.dkr.ecr.us-east-1.amazonaws.com/bench/cockroach:v23.2.4",
+      "essential": true,
+      "memory": 8192,
+      "command": [
+        "start-single-node",
+        "--insecure",
+        "--store=type=mem,size=6GB",
+        "--http-addr=localhost:8085"
+      ],
+      "portMappings": [{ "containerPort": 26257, "protocol": "tcp" }],
+      "healthCheck": {
+        "command": ["CMD-SHELL", "cockroach node status --insecure --host=localhost:26257 || exit 1"],
+        "interval": 15, "timeout": 5, "retries": 10, "startPeriod": 40
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/db-benchmark",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "cockroach",
+          "awslogs-create-group": "true"
+        }
+      }
+    },
+    {
+      "name": "benchmark-app",
+      "image": "074213351472.dkr.ecr.us-east-1.amazonaws.com/b-treevslsm-tree-app:latest",
+      "essential": true,
+      "memory": 3072,
+      "portMappings": [{ "containerPort": 8080, "protocol": "tcp" }],
+      "environment": [
+        { "name": "BENCHMARK_CRDB_URL",         "value": "jdbc:postgresql://localhost:26257/defaultdb?sslmode=disable" },
+        { "name": "BENCHMARK_CRDB_USER",        "value": "root" },
+        { "name": "BENCHMARK_CRDB_PASS",        "value": "" },
+        { "name": "BENCHMARK_ENABLED_ENGINES",  "value": "COCKROACHDB" },
+        { "name": "BENCHMARK_MODE",             "value": "worker" },
+        { "name": "BENCHMARK_S3_BUCKET",        "value": "db-benchmark-results-074213351472" }
+      ],
+      "dependsOn": [
+        { "containerName": "cockroachdb-benchmark", "condition": "HEALTHY" }
+      ],
+      "healthCheck": {
+        "command": ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"],
+        "interval": 15, "timeout": 5, "retries": 5, "startPeriod": 60
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/db-benchmark",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "app-cockroachdb",
+          "awslogs-create-group": "true"
+        }
+      }
+    }
+  ]
+}
