@@ -1,6 +1,8 @@
 package com.example.benchmark.service.runner;
 
 import com.datastax.oss.driver.api.core.CqlSession;
+import com.datastax.oss.driver.api.core.config.DriverConfigLoader;
+import com.datastax.oss.driver.api.core.config.DefaultDriverOption;
 import com.datastax.oss.driver.api.core.cql.PreparedStatement;
 import com.datastax.oss.driver.api.core.cql.Row;
 import com.example.benchmark.model.BenchmarkResult;
@@ -11,6 +13,7 @@ import com.example.benchmark.service.LatencyTracker;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.net.InetSocketAddress;
+import java.time.Duration;
 import java.util.List;
 import java.util.Random;
 import java.util.concurrent.ThreadLocalRandom;
@@ -37,6 +40,19 @@ public abstract class AbstractCassandraRunner implements DbBenchmarkRunner {
                     session = CqlSession.builder()
                         .addContactPoint(new InetSocketAddress(contactHost(), contactPort()))
                         .withLocalDatacenter(localDatacenter())
+                        .withConfigLoader(
+                            DriverConfigLoader.programmaticBuilder()
+                                .withDuration(
+                                    DefaultDriverOption.REQUEST_TIMEOUT,
+                                    Duration.ofSeconds(10))
+                                .withDuration(
+                                    DefaultDriverOption.CONNECTION_INIT_QUERY_TIMEOUT,
+                                    Duration.ofSeconds(10))
+                                .withDuration(
+                                    DefaultDriverOption.CONTROL_CONNECTION_TIMEOUT,
+                                    Duration.ofSeconds(10))
+                                .build()
+                        )
                         .build();
                 }
             }
