@@ -44,6 +44,8 @@ INDEX_COLORS = {
     "LSM-tree": "#c16622",
 }
 
+EMBEDDED_ENGINES = {"RocksDB"}
+
 
 @dataclass(frozen=True)
 class BenchmarkRow:
@@ -159,6 +161,19 @@ def performance_rows(rows: Iterable[BenchmarkRow]) -> list[BenchmarkRow]:
         for row in rows
         if row.status == "success" and row.workload != "Storage Size" and row.operations > 0
     ]
+
+
+def filter_rows(
+    rows: Iterable[BenchmarkRow],
+    exclude_engines: Iterable[str],
+    exclude_embedded_rocksdb: bool,
+) -> list[BenchmarkRow]:
+    excluded = {engine.casefold() for engine in exclude_engines}
+    if exclude_embedded_rocksdb:
+        excluded.update(engine.casefold() for engine in EMBEDDED_ENGINES)
+    if not excluded:
+        return list(rows)
+    return [row for row in rows if row.db_engine.casefold() not in excluded]
 
 
 def latest_storage_rows(rows: Iterable[BenchmarkRow]) -> list[BenchmarkRow]:
@@ -340,6 +355,18 @@ def main() -> None:
         action="store_true",
         help="Keep error rows in the loaded dataset. Performance charts still require successful operations.",
     )
+    parser.add_argument(
+        "--exclude-embedded-rocksdb",
+        action="store_true",
+        help="Exclude embedded RocksDB rows from all generated plots.",
+    )
+    parser.add_argument(
+        "--exclude-engine",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="Exclude a DB Engine by display name. Can be used multiple times, e.g. --exclude-engine RocksDB.",
+    )
     args = parser.parse_args()
 
     csv_paths = [path for path in args.input if path.exists()]
@@ -350,6 +377,16 @@ def main() -> None:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     all_rows = read_rows(csv_paths)
     rows = all_rows if args.include_errors else [row for row in all_rows if row.status == "success"]
+    rows = filter_rows(rows, args.exclude_engine, args.exclude_embedded_rocksdb)
+    if not rows:
+        raise SystemExit("No rows left after applying filters.")
+
+    excluded_engines = sorted(
+        set(row.db_engine for row in all_rows) - set(row.db_engine for row in rows)
+    )
+    if excluded_engines:
+        print(f"excluded engines: {', '.join(excluded_engines)}")
+
     perf_rows = performance_rows(rows)
     if not perf_rows:
         raise SystemExit("No successful performance rows found.")
