@@ -110,6 +110,7 @@ public abstract class AbstractCassandraRunner implements DbBenchmarkRunner {
             )
             """.formatted(KEYSPACE, TABLE));
         s.execute("CREATE INDEX IF NOT EXISTS ON " + KEYSPACE + "." + TABLE + "(category)");
+        s.execute("CREATE INDEX IF NOT EXISTS ON " + KEYSPACE + "." + TABLE + "(price)");
     }
 
     @Override
