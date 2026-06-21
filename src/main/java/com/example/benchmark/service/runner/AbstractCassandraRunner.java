@@ -199,7 +199,7 @@ public abstract class AbstractCassandraRunner implements DbBenchmarkRunner {
     public BenchmarkResult runRangeRead(int iterations) {
         PreparedStatement ps = session().prepare(
             "SELECT * FROM " + KEYSPACE + "." + TABLE +
-            " WHERE price >= ? AND price <= ? ALLOW FILTERING LIMIT 200");
+            " WHERE price >= ? AND price <= ? LIMIT 200 ALLOW FILTERING");
 
         LatencyTracker tracker = new LatencyTracker();
         long baseline          = measureBaselineNs();
