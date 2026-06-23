@@ -77,26 +77,26 @@ public class BenchmarkOrchestrator {
                     runner.setupSchema();
 
                     log.info("  [{}] INSERT_ONLY ({})", engine.displayName, rowCount);
-                    engineResults.add(safe(runner, () -> runner.runInsertOnly(rowCount)));
+                    engineResults.add(safe(runner, WorkloadType.INSERT_ONLY, () -> runner.runInsertOnly(rowCount)));
 
-                    engineResults.add(safe(runner, runner::getStorageSize));
+                    engineResults.add(safe(runner, WorkloadType.STORAGE_SIZE, runner::getStorageSize));
 
                     log.info("  [{}] UPDATE_HEAVY ({})", engine.displayName, rowCount / 5);
-                    engineResults.add(safe(runner, () -> runner.runUpdateHeavy(rowCount / 5)));
+                    engineResults.add(safe(runner, WorkloadType.UPDATE_HEAVY, () -> runner.runUpdateHeavy(rowCount / 5)));
 
                     log.info("  [{}] POINT_READ ({})", engine.displayName, readIter);
-                    engineResults.add(safe(runner, () -> runner.runPointRead(readIter)));
+                    engineResults.add(safe(runner, WorkloadType.POINT_READ, () -> runner.runPointRead(readIter)));
 
                     log.info("  [{}] RANGE_READ ({})", engine.displayName, readIter / 5);
-                    engineResults.add(safe(runner, () -> runner.runRangeRead(readIter / 5)));
+                    engineResults.add(safe(runner, WorkloadType.RANGE_READ, () -> runner.runRangeRead(readIter / 5)));
 
                     log.info("  [{}] DELETE_HEAVY ({})", engine.displayName, rowCount / 10);
-                    engineResults.add(safe(runner, () -> runner.runDeleteHeavy(rowCount / 10)));
+                    engineResults.add(safe(runner, WorkloadType.DELETE_HEAVY, () -> runner.runDeleteHeavy(rowCount / 10)));
 
                     log.info("  [{}] MIXED ({})", engine.displayName, readIter);
-                    engineResults.add(safe(runner, () -> runner.runMixed(readIter)));
+                    engineResults.add(safe(runner, WorkloadType.MIXED, () -> runner.runMixed(readIter)));
 
-                    engineResults.add(safe(runner, runner::getStorageSize));
+                    engineResults.add(safe(runner, WorkloadType.STORAGE_SIZE, runner::getStorageSize));
 
                     log.info("  [{}] teardown", engine.displayName);
                     runner.teardown();
@@ -130,12 +130,15 @@ public class BenchmarkOrchestrator {
         return lastResults.getOrDefault(engine, List.of());
     }
 
-    private BenchmarkResult safe(DbBenchmarkRunner runner, java.util.concurrent.Callable<BenchmarkResult> fn) {
+    private BenchmarkResult safe(
+            DbBenchmarkRunner runner,
+            WorkloadType workload,
+            java.util.concurrent.Callable<BenchmarkResult> fn) {
         try {
             return fn.call();
         } catch (Exception e) {
-            log.error("Workload error on {}: {}", runner.getEngine().displayName, e.getMessage());
-            return BenchmarkResult.error(runner.getEngine(), WorkloadType.INSERT_ONLY, e.getMessage());
+            log.error("Workload error on {} {}: {}", runner.getEngine().displayName, workload, e.getMessage());
+            return BenchmarkResult.error(runner.getEngine(), workload, e.getMessage());
         }
     }
 }
