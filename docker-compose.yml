@@ -4,6 +4,8 @@ services:
   percona:
     image: percona/percona-server:8.0
     container_name: percona-benchmark
+    cpus: "1.0"
+    mem_limit: 2g
     environment:
       MYSQL_ROOT_PASSWORD: root
       MYSQL_DATABASE: benchmark_db
@@ -27,6 +29,8 @@ services:
   postgres:
     image: postgres:16-alpine
     container_name: postgres-benchmark
+    cpus: "1.0"
+    mem_limit: 2g
     environment:
       POSTGRES_DB: benchmark_db
       POSTGRES_USER: benchmark
@@ -46,6 +50,8 @@ services:
   cockroachdb:
     image: cockroachdb/cockroach:v23.2.4
     container_name: cockroachdb-benchmark
+    cpus: "1.0"
+    mem_limit: 2g
     command: start-single-node --insecure --store=type=mem,size=1GB
     ports:
       - "26257:26257"
@@ -61,6 +67,8 @@ services:
   cassandra:
     image: cassandra:4.1
     container_name: cassandra-benchmark
+    cpus: "1.0"
+    mem_limit: 2g
     environment:
       MAX_HEAP_SIZE: 512M
       HEAP_NEWSIZE: 128M
@@ -80,6 +88,8 @@ services:
   scylladb:
     image: scylladb/scylla:5.4
     container_name: scylladb-benchmark
+    cpus: "1.0"
+    mem_limit: 2g
     command: --smp 1 --memory 512M --overprovisioned 1
     ports:
       - "9043:9042"
@@ -97,6 +107,8 @@ services:
   app:
     build: .
     container_name: benchmark-app
+    cpus: "1.0"
+    mem_limit: 2g
     ports:
       - "8080:8080"
     volumes:
